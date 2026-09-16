@@ -5,6 +5,8 @@ def load_json(path: str):
     try:
         with open(path, "r") as file:
             return json.load(file)
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON file: {path}")
     except FileNotFoundError:
         raise FileNotFoundError(f"File not found: {path}")
 
