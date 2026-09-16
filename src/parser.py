@@ -6,8 +6,7 @@ def load_json(path: str):
         with open(path, "r") as file:
             return json.load(file)
     except FileNotFoundError:
-        print(f"Error: file not found: {path}")
-        return None 
+        raise FileNotFoundError(f"File not found: {path}")
 
 def load_prompts(path: str):
     data = load_json(path)
