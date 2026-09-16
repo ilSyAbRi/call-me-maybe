@@ -11,7 +11,7 @@ def main():
         for function in functions:
             print(function)
     except Exception as e:
-        print(e)
+        print("Error :",e)
 
 
 if __name__ == "__main__":

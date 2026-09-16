@@ -30,5 +30,5 @@ def load_functions(path: str):
             parameters=function_data["parameters"],
             returns=function_data["returns"],
         )
-        functions.append(function_data)
+        functions.append(function)
     return functions

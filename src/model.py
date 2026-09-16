@@ -14,3 +14,8 @@ class FunctionDefinition(BaseModel):
     description: str
     parameters: dict[str, Parameter]
     returns: ReturnType
+
+class FunctionCallResult(BaseModel):
+    prompt: str
+    name: str
+    parameters: dict
