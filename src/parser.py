@@ -15,20 +15,20 @@ def load_prompts(path: str):
     prompts = []
 
     for prompt_data in data:
-        prompt = Prompt(prompt=prompt_data["prompt"])
+        prompt = Prompt(prompt=prompt_data.get("prompt"))
         prompts.append(prompt)
     return prompts
 
-def load_functions(path: str):
+def load_functions(path: str) -> dict[str, FunctionDefinition]:
     data = load_json(path)
-    functions = []
+    functions = dict()
 
     for function_data in data:
         function = FunctionDefinition(
-            name=function_data["name"],
-            description=function_data["description"],
-            parameters=function_data["parameters"],
-            returns=function_data["returns"],
+            name=function_data.get("name"),
+            description=function_data.get("description"),
+            parameters=function_data.get("parameters"),
+            returns=function_data.get("returns"),
         )
-        functions.append(function)
+        functions[function.name] = function
     return functions
