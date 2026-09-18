@@ -180,7 +180,7 @@ class Constrain_decoder:
 
         return False
 
-    def _get_forbidden_tokens(self) -> set[int]:
+    def get_forbidden_tokens(self) -> set[int]:
         """Get token IDs that can break the JSON structure."""
 
         forbidden_tokens: set[int] = set()
@@ -211,3 +211,64 @@ class Constrain_decoder:
                     break
 
         return forbidden_tokens
+
+    def select_string_value(self, input_ids: list[int], max_tokens: int = 30,) -> str:
+        """Generate a string value from the model."""
+
+        # Token for the character: "
+        close_quote = self.model.encode('"')[0].tolist()[-1]
+
+        # Tokens that we do not want inside the string.
+        banned_tokens = self.bann_string_token()
+
+        # Tokens that can break our JSON.
+        forbidden_tokens = self.get_forbidden_tokens()
+
+        # We want to allow " because it closes the string.
+        banned_tokens.discard(close_quote)
+        forbidden_tokens.discard(close_quote)
+
+        # Tokens that we already have.
+        current_ids = list(input_ids)
+
+        # Tokens that belong to our new string.
+        result_tokens = []
+
+        # Generate one token at a time.
+        for _ in range(max_tokens):
+
+            # Ask the model: "What token should come next?"
+            scores = self.model.get_logits_from_input_ids(current_ids)
+
+            # Copy the scores.
+            new_scores = list(scores)
+
+            # Remove forbidden tokens.
+            for token_id in banned_tokens:
+                new_scores[token_id] = -math.inf
+
+            # Take the token with the highest score.
+            next_token = new_scores.index(max(new_scores))
+
+            # " means that the string is finished.
+            if next_token == close_quote:
+                if len(result_tokens) > 0:
+                    break
+
+            # Stop if the model starts repeating itself.
+            if self.may_repeat_token(result_tokens, next_token):
+                break
+
+            # Stop if the token can break the JSON structure.
+            if next_token in forbidden_tokens:
+                if len(result_tokens) > 0:
+                    break
+
+            # Give the new token to the model.
+            current_ids.append(next_token)
+
+            # Save the new token in our result.
+            result_tokens.append(next_token)
+
+        # Convert tokens back into a normal string.
+        return self.model.decode(result_tokens)
