@@ -29,7 +29,7 @@ lint-strict:
 	@$(MYPY) $(MAIN) --strict
 
 debug:
-	@$(PDB) $(MAIN)
+	@$(PDB) -m $(MAIN)
 
 clean:
 	@rm -rf .mypy_cache

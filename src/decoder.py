@@ -1,33 +1,96 @@
-from src.parser import load_functions
+"""Constrained decoder for schema-compliant token generation."""
+
+import os
+
 from src.llm import create_model
-from src.model import Prompt, FunctionDefinition
-import math
-import json
+from src.model import FunctionDefinition, Prompt
+from src.parser import load_functions
+
 
 class Constrain_decoder:
-    def __init__(self):
-        """Create the model and load all function definitions."""
-        self.model = create_model()
-        self.func_defs: dict = load_functions(
+    """Guide LLM token generation using structural constraints."""
+
+    def __init__(
+        self,
+        func_defs: dict[str, FunctionDefinition] | str = (
             "data/input/functions_definition.json"
+        ),
+    ) -> None:
+        """Create the model and load all function definitions.
+
+        Args:
+            func_defs: Path to definitions file or dictionary of definitions.
+        """
+        self.model = create_model()
+        if isinstance(func_defs, dict):
+            self._func_defs: dict[str, FunctionDefinition] = func_defs
+        elif os.path.exists(func_defs):
+            self._func_defs = load_functions(func_defs)
+        else:
+            self._func_defs = {}
+
+        self.digit_tokens: dict[int, str] = {}
+        self.minus_token: int = 0
+        self.dot_token: int = 0
+        self.stop_tokens: set[int] = set()
+        self.funcs_prompt: str = ""
+        self.func_candidates: dict[str, list[int]] = {}
+
+        self._init_token_cache()
+        self._init_func_cache()
+
+    @property
+    def func_defs(self) -> dict[str, FunctionDefinition]:
+        """Return the dictionary of available function definitions."""
+        return self._func_defs
+
+    @func_defs.setter
+    def func_defs(self, val: dict[str, FunctionDefinition]) -> None:
+        """Update available function definitions and refresh cache."""
+        self._func_defs = val
+        self._init_func_cache()
+
+    def _init_token_cache(self) -> None:
+        """Pre-index special tokens for numeric and string decoding."""
+        self.digit_tokens = {
+            int(self.model.encode(str(d))[0].tolist()[-1]): str(d)
+            for d in range(10)
+        }
+        self.minus_token = int(self.model.encode("-")[0].tolist()[-1])
+        self.dot_token = int(self.model.encode(".")[0].tolist()[-1])
+
+        comma_token = int(self.model.encode(",")[0].tolist()[-1])
+        brace_token = int(self.model.encode("}")[0].tolist()[-1])
+        newline_token = int(self.model.encode("\n")[0].tolist()[-1])
+
+        self.stop_tokens = {comma_token, brace_token, newline_token}
+
+    def _init_func_cache(self) -> None:
+        """Cache prompts and token sequences for available functions."""
+        self.funcs_prompt = "\n".join(
+            [str(func) for func in self._func_defs.values()]
         )
+        self.func_candidates = {
+            name: [int(t) for t in self.model.encode(name + "\n")[0].tolist()]
+            for name in self._func_defs
+        }
 
     def get_func_name(self, prompt: Prompt) -> FunctionDefinition:
-        """Select the function that matches the user's request."""
+        """Select the function that matches the user's request.
 
-        funcs_names_ids = [
-            self.model.encode(func).int().tolist()[0]
-            for func in self.func_defs
-        ]
+        Uses a prefix trie constrained decoder with terminator tokens
+        to avoid prefix collisions between function names.
 
-        funcs_prompt = "\n".join(
-            [str(func) for func in self.func_defs.values()]
-        )
+        Args:
+            prompt: User request.
 
+        Returns:
+            The selected FunctionDefinition.
+        """
         system_prompt = (
             "Task: Select the best matching function.\n\n"
             "Available functions:\n"
-            f"{funcs_prompt}\n\n"
+            f"{self.funcs_prompt}\n\n"
             "Instructions:\n"
             "1. Read the user request carefully.\n"
             "2. Compare it with every available function.\n"
@@ -37,238 +100,143 @@ class Constrain_decoder:
             "Function: "
         )
 
-        prompt_ids = self.model.encode(system_prompt).int().tolist()[0]
+        prompt_ids = [
+            int(t) for t in self.model.encode(system_prompt)[0].tolist()
+        ]
         respond: list[int] = []
+        active: dict[str, list[int]] = dict(self.func_candidates)
+        step = 0
 
-        for i in range(max(len(func) for func in funcs_names_ids)):
-            if len(funcs_names_ids) == 1:
-                respond = funcs_names_ids[0]
-                break
+        while len(active) > 1:
+            logits = self.model.get_logits_from_input_ids(prompt_ids + respond)
+            valid_tokens = {
+                tokens[step]
+                for tokens in active.values()
+                if step < len(tokens)
+            }
 
-            logits = self.model.get_logits_from_input_ids(
-                prompt_ids + respond
-            )
-
-            valid_tokens = [
-                func[i]
-                for func in funcs_names_ids
-                if i < len(func)
-            ]
-
-            next_token = max(
-                valid_tokens,
-                key=lambda token: logits[token]
-            )
-
+            next_token = max(valid_tokens, key=lambda t: logits[t])
             respond.append(next_token)
 
-            funcs_names_ids = [
-                func_ids
-                for func_ids in funcs_names_ids
-                if i < len(func_ids) and next_token == func_ids[i]
-            ]
+            active = {
+                k: v
+                for k, v in active.items()
+                if step < len(v) and v[step] == next_token
+            }
+            step += 1
 
-        function_name = self.model.decode(respond)
-
-        return self.func_defs[function_name]
+        function_name = list(active.keys())[0]
+        return self._func_defs[function_name]
 
     def select_number_value(
         self,
         input_ids: list[int],
+        is_integer: bool = False,
         max_digits: int = 20,
     ) -> str:
-        """Generate one number from the model."""
+        """Generate a valid number using a finite state machine.
 
+        Args:
+            input_ids: Input prompt token IDs.
+            is_integer: Whether to constrain output strictly to an integer.
+            max_digits: Maximum number of numeric tokens to generate.
+
+        Returns:
+            The decoded number as a string.
+        """
+        state = 0  # 0: start, 1: digits pre-dot, 2: dot seen, 3: post-dot
         current_ids = list(input_ids)
         result_tokens: list[int] = []
 
-        allowed_ids: set[int] = set()
-        stop_ids: set[int] = set()
-
-        for character in "0123456789-.":
-            encoded = self.model.encode(character)
-            token_id = encoded[0].tolist()[-1]
-            allowed_ids.add(token_id)
-
-        for character in ",}":
-            encoded = self.model.encode(character)
-            token_id = encoded[0].tolist()[-1]
-            stop_ids.add(token_id)
-
-        valid_ids = allowed_ids | stop_ids
-
         for _ in range(max_digits):
-            scores = self.model.get_logits_from_input_ids(current_ids)
+            logits = self.model.get_logits_from_input_ids(current_ids)
+            allowed: set[int] = set()
 
-            filtered_scores = [-math.inf] * len(scores)
+            if state == 0:
+                allowed.update(self.digit_tokens.keys())
+                allowed.add(self.minus_token)
+            elif state == 1:
+                allowed.update(self.digit_tokens.keys())
+                if not is_integer:
+                    allowed.add(self.dot_token)
+                allowed.update(self.stop_tokens)
+            elif state == 2:
+                allowed.update(self.digit_tokens.keys())
+            elif state == 3:
+                allowed.update(self.digit_tokens.keys())
+                allowed.update(self.stop_tokens)
 
-            for token_id in valid_ids:
-                filtered_scores[token_id] = scores[token_id]
+            next_token = max(allowed, key=lambda t: logits[t])
 
-            next_token = filtered_scores.index(max(filtered_scores))
-
-            if next_token in stop_ids:
+            if next_token in self.stop_tokens:
                 break
+
+            if next_token == self.dot_token:
+                state = 2
+            elif next_token in self.digit_tokens:
+                state = 1 if state in (0, 1) else 3
+            elif next_token == self.minus_token:
+                state = 0
 
             result_tokens.append(next_token)
             current_ids.append(next_token)
 
-        return self.model.decode(result_tokens)
+        decoded = self.model.decode(result_tokens)
+        return str(decoded).strip()
 
     def select_boolean_value(
         self,
         input_ids: list[int],
     ) -> bool:
-        """Choose true or false based on the model's scores."""
+        """Choose true or false based on the model's scores.
 
+        Args:
+            input_ids: Input prompt token IDs.
+
+        Returns:
+            True or False boolean value.
+        """
         scores = self.model.get_logits_from_input_ids(input_ids)
 
-        true_id = self.model.encode("true")[0].tolist()[-1]
-        false_id = self.model.encode("false")[0].tolist()[-1]
+        true_id = int(self.model.encode("true")[0].tolist()[-1])
+        false_id = int(self.model.encode("false")[0].tolist()[-1])
 
-        if scores[true_id] > scores[false_id]:
-            return True
+        return bool(scores[true_id] > scores[false_id])
 
-        return False
-
-    def bann_string_token(self):
-        banned_str_token: set[int] = set()
-        forbidden_characters = {'"', "\n", "\r", "”", "“", "‘", "’"}
-        vocab_path = self.model.get_path_to_vocab_file()
-
-        with open(vocab_path, "r") as file:
-            vocabulary = json.load(file)
-
-        for token_id in vocabulary.values():
-            token_text = self.model.decode([token_id])
-
-            for character in forbidden_characters:
-                if character in token_text:
-                    banned_str_token.add(token_id)
-                    break
-        return banned_str_token
-
-    def may_repeat_token(
+    def take_string_value(
         self,
-        tokens: list[int],
-        next_token: int,
-    ) -> bool:
-        """Check if adding the next token creates a repetition."""
+        input_ids: list[int],
+        max_tokens: int = 35,
+    ) -> str:
+        """Generate a string value from the model.
 
-        tokens_with_next = tokens + [next_token]
+        Stops on closing quote delimiter or newline to prevent runaway
+        prose generation.
 
-        if len(tokens_with_next) >= 2:
-            last_token = tokens_with_next[-1]
-            previous_token = tokens_with_next[-2]
+        Args:
+            input_ids: Token IDs of the prompt ending with opening quote.
+            max_tokens: Maximum tokens to generate for this string argument.
 
-            if last_token == previous_token:
-                return True
-
-        if len(tokens_with_next) >= 4:
-            last_two_tokens = tokens_with_next[-2:]
-            previous_two_tokens = tokens_with_next[-4:-2]
-
-            if last_two_tokens == previous_two_tokens:
-                return True
-
-        if len(tokens_with_next) >= 6:
-            last_three_tokens = tokens_with_next[-3:]
-            previous_three_tokens = tokens_with_next[-6:-3]
-
-            if last_three_tokens == previous_three_tokens:
-                return True
-
-        return False
-
-    def get_forbidden_tokens(self) -> set[int]:
-        """Get token IDs that can break the JSON structure."""
-
-        forbidden_tokens: set[int] = set()
-
-        forbidden_text = [
-            "'",
-            "regex",
-            "replacement",
-            "source_string",
-            "{",
-            "}",
-            ".",
-            "\\",
-            "\n",
-        ]
-
-        vocabulary_path = self.model.get_path_to_vocab_file()
-
-        with open(vocabulary_path, "r") as vocabulary_file:
-            vocabulary = json.load(vocabulary_file)
-
-        for token_id in vocabulary.values():
-            token_text = self.model.decode([token_id])
-
-            for forbidden_text_item in forbidden_text:
-                if forbidden_text_item in token_text:
-                    forbidden_tokens.add(token_id)
-                    break
-
-        return forbidden_tokens
-
-    def take_string_value(self, input_ids: list[int], max_tokens: int = 30,) -> str:
-        """Generate a string value from the model."""
-
-        # Token for the character: "
-        close_quote = self.model.encode('"')[0].tolist()[-1]
-
-        # Tokens that we do not want inside the string.
-        banned_tokens = self.bann_string_token()
-
-        # Tokens that can break our JSON.
-        forbidden_tokens = self.get_forbidden_tokens()
-
-        # We want to allow " because it closes the string.
-        banned_tokens.discard(close_quote)
-        forbidden_tokens.discard(close_quote)
-
-        # Tokens that we already have.
+        Returns:
+            The generated string argument.
+        """
         current_ids = list(input_ids)
+        result_chars: list[str] = []
 
-        # Tokens that belong to our new string.
-        result_tokens = []
-
-        # Generate one token at a time.
         for _ in range(max_tokens):
+            logits = self.model.get_logits_from_input_ids(current_ids)
+            next_token = max(range(len(logits)), key=lambda t: logits[t])
+            tok_str = str(self.model.decode([next_token]))
 
-            # Ask the model: "What token should come next?"
-            scores = self.model.get_logits_from_input_ids(current_ids)
-
-            # Copy the scores.
-            new_scores = list(scores)
-
-            # Remove forbidden tokens.
-            for token_id in banned_tokens:
-                new_scores[token_id] = -math.inf
-
-            # Take the token with the highest score.
-            next_token = new_scores.index(max(new_scores))
-
-            # " means that the string is finished.
-            if next_token == close_quote:
-                if len(result_tokens) > 0:
-                    break
-
-            # Stop if the model starts repeating itself.
-            if self.may_repeat_token(result_tokens, next_token):
+            if '"' in tok_str:
+                idx = tok_str.index('"')
+                result_chars.append(tok_str[:idx])
                 break
 
-            # Stop if the token can break the JSON structure.
-            if next_token in forbidden_tokens:
-                if len(result_tokens) > 0:
-                    break
+            if "\n" in tok_str or "\r" in tok_str:
+                break
 
-            # Give the new token to the model.
+            result_chars.append(tok_str)
             current_ids.append(next_token)
 
-            # Save the new token in our result.
-            result_tokens.append(next_token)
-
-        # Convert tokens back into a normal string.
-        return self.model.decode(result_tokens)
+        return "".join(result_chars)
