@@ -2,7 +2,7 @@ from src.parser import load_functions
 from src.llm import create_model
 from src.model import Prompt, FunctionDefinition
 import math
-
+import json
 
 class Constrain_decoder:
     def __init__(self):
@@ -130,3 +130,84 @@ class Constrain_decoder:
             return True
 
         return False
+
+    def bann_string_token(self):
+        banned_str_token: set[int] = set()
+        forbidden_characters = {'"', "\n", "\r", "”", "“", "‘", "’"}
+        vocab_path = self.model.get_path_to_vocab_file()
+
+        with open(vocab_path, "r") as file:
+            vocabulary = json.load(file)
+
+        for token_id in vocabulary.values():
+            token_text = self.model.decode([token_id])
+
+            for character in forbidden_characters:
+                if character in token_text:
+                    banned_str_token.add(token_id)
+                    break
+        return banned_str_token
+
+    def may_repeat_token(
+        self,
+        tokens: list[int],
+        next_token: int,
+    ) -> bool:
+        """Check if adding the next token creates a repetition."""
+
+        tokens_with_next = tokens + [next_token]
+
+        if len(tokens_with_next) >= 2:
+            last_token = tokens_with_next[-1]
+            previous_token = tokens_with_next[-2]
+
+            if last_token == previous_token:
+                return True
+
+        if len(tokens_with_next) >= 4:
+            last_two_tokens = tokens_with_next[-2:]
+            previous_two_tokens = tokens_with_next[-4:-2]
+
+            if last_two_tokens == previous_two_tokens:
+                return True
+
+        if len(tokens_with_next) >= 6:
+            last_three_tokens = tokens_with_next[-3:]
+            previous_three_tokens = tokens_with_next[-6:-3]
+
+            if last_three_tokens == previous_three_tokens:
+                return True
+
+        return False
+
+    def _get_forbidden_tokens(self) -> set[int]:
+        """Get token IDs that can break the JSON structure."""
+
+        forbidden_tokens: set[int] = set()
+
+        forbidden_text = [
+            "'",
+            "regex",
+            "replacement",
+            "source_string",
+            "{",
+            "}",
+            ".",
+            "\\",
+            "\n",
+        ]
+
+        vocabulary_path = self.model.get_path_to_vocab_file()
+
+        with open(vocabulary_path, "r") as vocabulary_file:
+            vocabulary = json.load(vocabulary_file)
+
+        for token_id in vocabulary.values():
+            token_text = self.model.decode([token_id])
+
+            for forbidden_text_item in forbidden_text:
+                if forbidden_text_item in token_text:
+                    forbidden_tokens.add(token_id)
+                    break
+
+        return forbidden_tokens
