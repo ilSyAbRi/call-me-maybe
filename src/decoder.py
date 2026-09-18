@@ -212,7 +212,7 @@ class Constrain_decoder:
 
         return forbidden_tokens
 
-    def select_string_value(self, input_ids: list[int], max_tokens: int = 30,) -> str:
+    def take_string_value(self, input_ids: list[int], max_tokens: int = 30,) -> str:
         """Generate a string value from the model."""
 
         # Token for the character: "
