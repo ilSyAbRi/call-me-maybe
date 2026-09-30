@@ -1,11 +1,10 @@
-"""Load project data from JSON files."""
-
 import json
+from typing import Any
 
 from src.model import FunctionDefinition, Prompt
 
 
-def load_json(path: str):
+def load_json(path: str) -> Any:
     """Load JSON data from a file.
 
     Args:
@@ -58,7 +57,7 @@ def load_prompts(path: str) -> list[Prompt]:
             )
 
         prompt = Prompt(
-            prompt=prompt_data.get("prompt")
+            prompt=prompt_data["prompt"]
         )
 
         prompts.append(prompt)
@@ -93,10 +92,10 @@ def load_functions(
             )
 
         function = FunctionDefinition(
-            name=function_data.get("name"),
+            name=function_data["name"],
             description=function_data.get("description"),
-            parameters=function_data.get("parameters"),
-            returns=function_data.get("returns"),
+            parameters=function_data["parameters"],
+            returns=function_data["returns"],
         )
 
         functions[function.name] = function

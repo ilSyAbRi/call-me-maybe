@@ -1,5 +1,3 @@
-"""Constrained decoder for schema-compliant token generation."""
-
 import os
 
 from src.llm import create_model

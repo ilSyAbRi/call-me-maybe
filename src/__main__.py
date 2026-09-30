@@ -1,5 +1,3 @@
-"""Main entry point for the Call-Me-Maybe project."""
-
 import argparse
 import sys
 

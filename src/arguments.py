@@ -1,5 +1,3 @@
-"""Extract function arguments using constrained decoding."""
-
 from typing import Any
 
 from src.decoder import Constrain_decoder

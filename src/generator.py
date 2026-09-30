@@ -1,5 +1,3 @@
-"""Build complete function calls from user prompts."""
-
 from typing import Any
 
 from src.arguments import ArgumentExtractor

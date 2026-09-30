@@ -1,5 +1,3 @@
-"""Write function-calling results to JSON."""
-
 import json
 import os
 from typing import Any
